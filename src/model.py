@@ -203,9 +203,12 @@ class MILAttentionPooling(nn.Module):
             nn.Sigmoid()
         )
         self.attn_w = nn.Linear(hidden_dim, 1)
-        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()    
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()    # <- dropout 추가?? 일단 0으로 해 놓음
 
     def forward(self, spot_embeds: torch.Tensor):
+        """
+        Batch 처리 가능하도록 수정했으나 기능 자체는 원본 코드와 동일
+        """
         # spot_embeds: (N, D) or (B, N, D)
         if spot_embeds.ndim == 2:
             H = spot_embeds.unsqueeze(0)  # (1, N, D)
@@ -230,10 +233,21 @@ class MILAttentionPooling(nn.Module):
         return Z, alpha     
 
 
-        
+# --------------------------------------------------------
+# 5. Layer after encoders
+# --------------------------------------------------------
+class LinearHead(nn.Module):
+    def __init__(self, dim: int, use_ln: bool=True):
+        super().__init__()
+        self.ln = nn.LayerNorm(dim) if use_ln else nn.Identity()
+        self.fc = nn.Linear(dim, dim)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.fc(self.ln(x))
+
 
 # -------------------------------------------------------
-# 5. Full Multi-Modal Model
+# 6. Full Multi-Modal Model
 # -------------------------------------------------------
 class MultiModalMILModel(nn.Module):
     """
@@ -253,14 +267,22 @@ class MultiModalMILModel(nn.Module):
             img_pretrained: bool=True,
             mil_hidden_dim: int=None,
             mil_dropout: float=0.0,
-            fusion_dropout: float=0.2
+            fusion_dropout: float=0.2,
+            head_use_ln: bool=True  # <- FC용 LayerNorm 사용 여부
     ):
         super().__init__()
         
-        # Two encoders
         self.img_encoder = ImageEncoder(embed_dim=embed_dim, backbone=img_backbone, pretrained=img_pretrained)
         self.st_encoder = STEncoder(num_genes=num_genes, embed_dim=embed_dim, nhead=4, num_layers=2, dropout=0.1)
         
+        # FC head 추가: img/st encoder 출력 -> embed_dim
+        self.img_head = LinearHead(dim=embed_dim, use_ln=head_use_ln)
+        self.st_head = nn.Identity()    # ST 뒤에는 head 추가 안 함
+        # self.st_head = LinearHead(dim=embed_dim, use_ln=head_use_ln)
+
+        # freeze
+        self.freeze_encoders()
+
         print(f"Fusion option: {fusion_option}")
         
         self.fusion = FusionLayer(
@@ -284,9 +306,38 @@ class MultiModalMILModel(nn.Module):
 
         # (Optional) hooks for XAI can be added later
 
+    def freeze_encoders(self):
+        """
+        이미지 인코더 freeze, ST 인코더는 유지하도록 구현
+        주석 해제 시 ST도 freeze
+        """
+        for param in self.img_encoder.parameters():
+            param.requires_grad = False
+        # for param in self.st_encoder.parameters():
+        #     param.requires_grad = False
+        
+        # BN/dropout 고정
+        self.img_encoder.eval()
+        # self.st_encoder.eval()
+    
+    def train(self, mode: bool=True):
+        # Override to keep encoders in eval mode during training
+        super().train(mode)
+        self.img_encoder.eval()
+        # self.st_encoder.eval()
+
     def forward(self, img: torch.Tensor, expr: torch.Tensor, coords: torch.Tensor=None) -> torch.Tensor:
-        img_feat = self.img_encoder(img)              # (N, D)
-        st_feat = self.st_encoder(expr, coords)       # (N, D)
+        # 인코더 고정
+        with torch.no_grad():
+            img_feat = self.img_encoder(img)
+            # st_feat = self.st_encoder(expr, coords)
+        st_feat = self.st_encoder(expr, coords)         # ST freeze 시 제거
+
+        # head만 학습
+        img_feat = self.img_head(img_feat)              # (N, D)
+        st_feat = self.st_head(st_feat)                 # ST도 일단 head 학습
+
+        # 이후 동일
         spot_embeds = self.fusion(img_feat, st_feat)  # (N, D)
         wsi_embed, attn = self.mil_pooling(spot_embeds)  # (D,), (N, 1)
         logits = self.classifier(wsi_embed.unsqueeze(0)).squeeze(0)  # (C,)

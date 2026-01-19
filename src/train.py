@@ -15,7 +15,8 @@ from model import MultiModalMILModel
 # Configuration
 # -------------------------------------------------------
 CONFIG = {
-    "root_dir": "/workspace/Temp/ver1/hest_data",
+    # "root_dir": "/workspace/Temp/ver1/hest_data",
+    "root_dir": "/content/hest_data",
     "epochs": 50,
     "lr": 1e-4,
     "embed_dim": 64,
@@ -88,15 +89,25 @@ def train(cfg):
         num_genes=num_genes,
         num_classes=cfg["num_classes"],
         embed_dim=cfg["embed_dim"],
+        head_use_ln=True    # <- 추가!!
     ).to(device)
     
-    # Completely freeze the image encoder
-    print("❄️ Freezing Image Encoder...")
-    for param in model.img_encoder.parameters():
-        param.requires_grad = False
-    model.img_encoder.eval()  # Set to eval mode
-    
+    # model.py에 encoder freeze + eval 고정 함수 추가했음
+    if hasattr(model, 'freeze_encoders'):
+        model.freeze_encoders()
+
+    # 인코더 제외 학습 파라미터 명시적으로 추가 (optional)
+    trainable_params = (
+        list(model.img_head.parameters()) +
+        list(model.st_encoder.parameters()) +  # <- ST 인코더는 학습
+        # list(model.st_head.parameters()) +
+        list(model.fusion.parameters()) +
+        list(model.mil_pooling.parameters()) +
+        list(model.classifier.parameters())
+    )
+
     optimizer = optim.AdamW(
+        # trainable_params, # <- 필요 시 추가!!
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=cfg["lr"],
         weight_decay=1e-4
@@ -105,12 +116,11 @@ def train(cfg):
     scaler = GradScaler('cuda')
     
     # 5. Training loop
-    print("\n=== Start Training (Memory-Safe Mode) ===")
+    print("\n=== Start Training (Memory-Safe Mode, Encoders Frozen) ===")
     
     for epoch in range(cfg["epochs"]):
-        model.train()
-        model.img_encoder.eval()  # Image encoder always stays in eval mode
-        
+        model.train()   # model.train() 내에서 인코더 eval 고정
+
         total_loss = 0
         correct = 0
         optimizer.zero_grad()
@@ -148,6 +158,7 @@ def train(cfg):
                             img_feat = model.img_encoder(img_batch)
                         
                         # ST encoder is trainable
+                        img_feat = model.img_head(img_feat)
                         st_feat = model.st_encoder(expr_batch, coord_batch)
                         fusion = model.fusion(img_feat, st_feat)
                     
