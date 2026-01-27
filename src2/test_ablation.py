@@ -144,7 +144,7 @@ def main():
     parser.add_argument("--top_k_genes", type=int, default=512)
     parser.add_argument("--freeze_image_encoder", action="store_true")
 
-    # ✅ ablation flags
+    # 추가: ablation flags
     parser.add_argument("--use_image", action="store_true", help="Enable image modality")
     parser.add_argument("--use_st", action="store_true", help="Enable ST modality")
 
@@ -154,7 +154,7 @@ def main():
     parser.add_argument("--topk_genes", type=int, default=30)
     parser.add_argument("--embed_2d", type=str, default="umap", choices=["umap", "pca"])
 
-    # 예시 args (로컬 디버깅용)
+    # 예시 args (로컬 디버깅용, 수정할 것)
     args = parser.parse_args(args=[
         "--root_dir", r"C:\Users\rdh08\Desktop\Capstone\src2\hest_data",
         "--ckpt", r"C:\Users\rdh08\Desktop\Capstone\src2\best_model_concat.pt",
@@ -162,7 +162,7 @@ def main():
         "--use_st",
     ])
 
-    # 기본값: 둘 다 안 주면 멀티모달로 취급
+    # default=multimodal
     if (not args.use_image) and (not args.use_st):
         args.use_image = True
         args.use_st = True
@@ -198,7 +198,7 @@ def main():
         top_k_genes=args.top_k_genes,
         freeze_image_encoder=args.freeze_image_encoder,
 
-        # ✅ ablation flags into model
+        # ablation flags into model
         use_image=args.use_image,
         use_st=args.use_st,
     ).to(args.device)
@@ -224,7 +224,7 @@ def main():
 
             label = int(batch["label"].item())
 
-            # ✅ modality별로 필요한 것만 GPU로
+            # modality별로 필요한 것만 GPU로
             images = batch["images"].to(args.device) if args.use_image else None
             expr   = batch["expr"].to(args.device)   if args.use_st else None
             coords = batch["coords"].to(args.device) if args.use_st else None
@@ -235,7 +235,7 @@ def main():
             coords_raw = batch.get("coords_raw", None)        # torch.Tensor (N,2)
             gene_order = batch.get("gene_order", global_gene_order)
 
-            # ✅ gene attn은 ST 켜졌을 때만 요청
+            # gene attn은 ST 켜졌을 때만 요청
             outputs = model(
                 images,
                 expr,
@@ -292,7 +292,7 @@ def main():
             # Top-10 important spots
             top10 = torch.topk(mil_attn, k=min(10, n_spots)).indices.detach().cpu().tolist()
 
-            # (A) UMAP/PCA (spot_embeds 있을 때만)
+            # UMAP/PCA: spot_embeds 있을 때만
             if spot_embeds is not None:
                 X = spot_embeds.detach().cpu().numpy()
                 Z = compute_2d_embedding(X, method=args.embed_2d, seed=0)
@@ -328,7 +328,7 @@ def main():
                 plt.savefig(os.path.join(out_dir, f"spot_embeds_{args.embed_2d}_color.png"), dpi=200)
                 plt.close()
 
-            # (B) Top-k patches 저장은 이미지가 있을 때만 가능
+            # Top-k patches 저장: 이미지 있을 때만
             if args.use_image and images is not None:
                 k = min(args.topk_patches, n_spots)
                 topk = torch.topk(mil_attn, k=k).indices.detach().cpu().tolist()
@@ -345,7 +345,7 @@ def main():
                     fn += ".png"
                     save_patch_image(images[i], os.path.join(patch_dir, fn))
 
-            # (C) attention scatter (coords_raw 기반) — coords_raw는 st에서 오는 경우가 많지만, loader가 주면 그냥 사용
+            # attention scatter (coords_raw 기반) — coords_raw는 st에서 오는 경우가 많지만, loader가 주면 그냥 사용
             if coords_raw is not None:
                 plot_attention_scatter(
                     coords_raw=coords_raw,
@@ -355,7 +355,7 @@ def main():
                     title="Spot importance (MIL attn) + Top10"
                 )
 
-            # (D) gene top list — ST 켜져 있고 gene_attn/gene_indices 있을 때만
+            # (D) gene top list: ST 켜져 있고 gene_attn/gene_indices 있을 때만
             if args.use_st and (gene_attn is not None) and (gene_indices is not None) and (len(gene_order) > 0):
                 # gene_attn: (N,1,G) or (N,G)
                 if gene_attn.dim() == 3:
