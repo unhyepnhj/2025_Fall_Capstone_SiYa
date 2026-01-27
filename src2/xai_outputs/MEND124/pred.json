@@ -1,0 +1,26 @@
+{
+  "sample_id": "MEND124",
+  "gt_label": 0,
+  "pred_label": 1,
+  "probs": [
+    0.008481670171022415,
+    0.9915183186531067
+  ],
+  "num_spots_used": 1421,
+  "top10_spot_indices": [
+    783,
+    784,
+    340,
+    29,
+    1000,
+    1334,
+    1307,
+    906,
+    878,
+    650
+  ],
+  "barcodes_available": true,
+  "patch_indices_available": true,
+  "coords_raw_available": true,
+  "gene_xai_available": true
+}

@@ -1,0 +1,26 @@
+{
+  "sample_id": "SPA11",
+  "gt_label": 0,
+  "pred_label": 1,
+  "probs": [
+    0.07600906491279602,
+    0.9239909648895264
+  ],
+  "num_spots_used": 258,
+  "top10_spot_indices": [
+    185,
+    239,
+    142,
+    141,
+    96,
+    98,
+    143,
+    131,
+    144,
+    237
+  ],
+  "barcodes_available": true,
+  "patch_indices_available": true,
+  "coords_raw_available": true,
+  "gene_xai_available": true
+}
