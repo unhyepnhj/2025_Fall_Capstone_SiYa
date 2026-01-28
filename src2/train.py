@@ -363,7 +363,6 @@ def main():
         if val_acc > best_val_acc:  # best model
             best_val_acc = val_acc
             torch.save(model.state_dict(), "best_model_attn.pt")
-            print(f"✓ Saved best model to: {ckpt_path} (val_acc={val_acc:.2f}%)")
 
             # confusion matrix -> best model일 때만 plot
             plot_confusion_matrix(
