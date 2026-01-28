@@ -17,6 +17,7 @@ import torch.optim as optim
 from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
+from contextlib import nullcontext
 
 from dataset.loader import CustomSample, create_wsi_dataloader
 from models.model_ablation import MultiModalMILModel
@@ -188,6 +189,9 @@ def encode_spots_chunkwise(model, batch, config, device):
 
     spot_embeds_list = []
 
+    use_amp = config["use_image"]
+    amp_ctx = autocast() if use_amp else nullcontext()
+
     for i in range(0, N, config["batch_spots"]):
         j = min(i + config["batch_spots"], N)
 
@@ -195,7 +199,7 @@ def encode_spots_chunkwise(model, batch, config, device):
         expr_b = expr[i:j].to(device) if use_st else None
         coord_b = coords[i:j].to(device) if use_st else None
 
-        with autocast():
+        with amp_ctx:
             # ----- Image branch -----
             if use_image:
                 if freeze_img:
@@ -261,6 +265,9 @@ def train_epoch(model, loader, criterion, optimizer, scaler, config, device):
 
     loop = tqdm(loader, desc="Training")
 
+    use_amp = config["use_image"]
+    amp_ctx = autocast() if use_amp else nullcontext()
+
     for step, batch in enumerate(loop):
         label = batch["label"].to(device)
 
@@ -268,21 +275,29 @@ def train_epoch(model, loader, criterion, optimizer, scaler, config, device):
         spot_embeds = encode_spots_chunkwise(model, batch, config, device)
 
         # (2) MIL + classifier (same for all ablations)
-        with autocast():
+        with amp_ctx:
             wsi_embed, _ = model.mil_pooling(spot_embeds)
             logits = model.classifier(wsi_embed.unsqueeze(0)).squeeze(0)
             loss = criterion(logits.unsqueeze(0), label.unsqueeze(0))
             loss = loss / config["accum_steps"]
 
-        scaler.scale(loss).backward()
+        if use_amp:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
 
         if (step + 1) % config["accum_steps"] == 0:
-            scaler.unscale_(optimizer)
+            if use_amp:
+                scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(
                 filter(lambda p: p.requires_grad, model.parameters()), 1.0
             )
-            scaler.step(optimizer)
-            scaler.update()
+
+            if use_amp:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
             optimizer.zero_grad()
 
         epoch_loss += loss.item() * config["accum_steps"]
@@ -298,12 +313,16 @@ def train_epoch(model, loader, criterion, optimizer, scaler, config, device):
         
     # after loop ends: flush remaining grads once
     if (step + 1) % config["accum_steps"] != 0:
-        scaler.unscale_(optimizer)
+        if use_amp:
+            scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(
             filter(lambda p: p.requires_grad, model.parameters()), 1.0
         )
-        scaler.step(optimizer)
-        scaler.update()
+        if use_amp:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
         optimizer.zero_grad()
         
     return epoch_loss / len(loader), 100 * correct / len(loader)
@@ -326,7 +345,9 @@ def validate(model, loader, criterion, config, device):
 
         spot_embeds = encode_spots_chunkwise(model, batch, config, device)
 
-        with autocast():
+        use_amp = config["use_image"]
+        amp_ctx = autocast() if use_amp else nullcontext()
+        with amp_ctx:
             wsi_embed, _ = model.mil_pooling(spot_embeds)
             logits = model.classifier(wsi_embed.unsqueeze(0)).squeeze(0)
             loss = criterion(logits.unsqueeze(0), label.unsqueeze(0))
@@ -414,7 +435,7 @@ def main():
     )
 
     criterion = nn.CrossEntropyLoss()
-    scaler = GradScaler()
+    scaler = GradScaler() if CONFIG["use_image"] else None
 
     best_val_acc = 0.0
 
