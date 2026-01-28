@@ -151,6 +151,14 @@ def prepare_data_splits(root_dir, seed=42):
         stratify=labels,
         random_state=seed
     )
+    
+    # data leakage 체크
+    train_ids = {s.sample_id for s in train_samples}
+    val_ids   = {s.sample_id for s in val_samples}
+    inter = train_ids & val_ids
+    print("Overlap train/val:", len(inter))
+    if len(inter) > 0:
+        print("Examples:", list(sorted(inter))[:10])
 
     print(f"\nSplit: {len(train_samples)} train, {len(val_samples)} val")
     return train_samples, val_samples
@@ -221,13 +229,22 @@ def encode_spots_chunkwise(model, batch, config, device):
                 # st-only
                 spot_embeds_chunk = st_feat
 
-        spot_embeds_list.append(spot_embeds_chunk.detach().cpu())
+        # spot_embeds_list.append(spot_embeds_chunk.detach().cpu())
+        spot_embeds_list.append(spot_embeds_chunk)
 
         # cleanup
-        del img_b, expr_b, coord_b, img_feat, st_feat, spot_embeds_chunk
+
+        if use_image:
+            del img_b, img_feat
+        if use_st:
+            del expr_b, coord_b, st_feat
+
+        del spot_embeds_chunk
         torch.cuda.empty_cache()
 
-    spot_embeds = torch.cat(spot_embeds_list, dim=0).to(device)
+    # spot_embeds = torch.cat(spot_embeds_list, dim=0).to(device)
+    spot_embeds = torch.cat(spot_embeds_list, dim=0)
+
     return spot_embeds
 
 
@@ -278,7 +295,17 @@ def train_epoch(model, loader, criterion, optimizer, scaler, config, device):
 
         del spot_embeds, wsi_embed, logits, loss
         torch.cuda.empty_cache()
-
+        
+    # after loop ends: flush remaining grads once
+    if (step + 1) % config["accum_steps"] != 0:
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(
+            filter(lambda p: p.requires_grad, model.parameters()), 1.0
+        )
+        scaler.step(optimizer)
+        scaler.update()
+        optimizer.zero_grad()
+        
     return epoch_loss / len(loader), 100 * correct / len(loader)
 
 
