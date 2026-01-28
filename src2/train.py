@@ -1,6 +1,14 @@
 import warnings
 warnings.filterwarnings('ignore')
 
+from sklearn.metrics import (
+    roc_auc_score, roc_curve,
+    precision_recall_fscore_support,
+    confusion_matrix
+)
+import matplotlib.pyplot as plt
+import numpy as np
+
 import yaml
 import os
 import torch
@@ -60,6 +68,44 @@ def set_seed(seed):
     import numpy as np
     np.random.seed(seed)
 
+def plot_confusion_matrix(
+  cm, 
+  class_names=('0', '1'),
+  title="Confusion Matrix",
+  save_path = None
+):
+    """
+    cm: np.array shape (2, 2) [[TN, FP]. [FN, TP]]
+    """
+    fig, ax = plt.subplots(figsize=(4, 4))
+    im = ax.imshow(cm)
+
+    # ticks / labels
+    ax.set_xticks(np.arange(len(class_names)))
+    ax.set_yticks(np.arange(len(class_names)))
+    ax.set_xticklabels(class_names)
+    ax.set_yticklabels(class_names)
+
+    ax.set_xlabel("Predicted label")
+    ax.set_ylabel("True label")
+    ax.set_title(title)
+
+    # 숫자 표시
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            ax.text(
+                j, i, cm[i, j],
+                ha="center", va="center",
+                fontsize=12
+            )
+    
+    fig.tight_layout()
+
+    if save_path is not None:
+        plt.savefig(save_path, dpi=200)
+        plt.close(fig)
+    else:
+        plt.show()
 
 # ===============================================
 # Data Split
@@ -188,6 +234,10 @@ def validate(model, loader, criterion, config, device):
     model.eval()
     val_loss, correct = 0.0, 0
 
+    y_true = []
+    y_score = []  # prob of class 1
+    y_pred = []   # predicted label (0/1)
+
     for batch in tqdm(loader, desc="Validation"):
         images = batch["images"]
         expr = batch["expr"]
@@ -213,9 +263,36 @@ def validate(model, loader, criterion, config, device):
             loss = criterion(logits.unsqueeze(0), label.unsqueeze(0))
 
         val_loss += loss.item()
-        correct += int(logits.argmax().item() == label.item())
+        pred = logits.argmax().item()
+        correct += int(pred == label.item())
 
-    return val_loss / len(loader), 100 * correct / len(loader)
+        # ROC/AUC
+        prob_pos = torch.softmax(logits, dim=0)[1].item()
+        y_true.append(label.item())
+        y_score.append(prob_pos)
+        y_pred.append(pred)
+
+    val_loss = val_loss / len(loader)
+    val_acc = 100 * correct / len(loader)
+
+    # AUC
+    auc = float('nan')
+    try:
+      auc = roc_auc_score(y_true, y_score)
+      # fpr, tpr, thresholds = roc_curve(y_true, y_score)
+    except Exception:
+      pass
+    
+    # precision/recall/f1 (class 1=positive로)
+    p, r, f1, _ = precision_recall_fscore_support(
+        y_true, y_pred, average="binary", pos_label=1, zero_division=0
+    )
+    p, r, f1 = float(p), float(r), float(f1)
+
+    # confusion matrix: [[TN, FP], [FN, TP]]
+    cm = confusion_matrix(y_true, y_pred, labels = [0, 1])
+
+    return val_loss, val_acc, auc, p, r, f1, cm
 
 
 # ===============================================
@@ -273,15 +350,28 @@ def main():
         train_loss, train_acc = train_epoch(
             model, train_loader, criterion, optimizer, scaler, CONFIG, device
         )
-        val_loss, val_acc = validate(
+        val_loss, val_acc, val_auc, val_p, val_r, val_f1, cm = validate(
             model, val_loader, criterion, CONFIG, device
         )
 
-        print(f"Train Acc: {train_acc:.2f}% | Val Acc: {val_acc:.2f}%")
+        print(
+            f"Train Acc: {train_acc:.2f}% | "
+            f"Val Acc: {val_acc:.2f}% | Val AUC: {val_auc:.4f} | "
+            f"P/R/F1: {val_p:.3f}/{val_r:.3f}/{val_f1:.3f}"
+        )
 
-        if val_acc > best_val_acc:
+        if val_acc > best_val_acc:  # best model
             best_val_acc = val_acc
             torch.save(model.state_dict(), "best_model_attn.pt")
+            print(f"✓ Saved best model to: {ckpt_path} (val_acc={val_acc:.2f}%)")
+
+            # confusion matrix -> best model일 때만 plot
+            plot_confusion_matrix(
+                cm,
+                class_names=("0", "1"),   # Healthy / Cancer면 바꿔도 됨
+                title=f"Val Confusion Matrix (Epoch {epoch+1})",
+                save_path=f"confusion_matrix_epoch_{epoch+1}.png"
+            )
 
     print("\n TRAINING COMPLETE!!")
 
